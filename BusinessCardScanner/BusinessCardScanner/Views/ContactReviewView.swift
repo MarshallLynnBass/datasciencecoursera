@@ -30,9 +30,18 @@ struct ContactReviewView: View {
             Section(header: Text("Phone Numbers")) {
                 ForEach(contact.phoneNumbers.indices, id: \.self) { index in
                     HStack {
-                        TextField("Phone", text: $contact.phoneNumbers[index])
+                        Picker("", selection: $contact.phoneNumbers[index].label) {
+                            ForEach(LabeledPhone.PhoneLabel.allCases) { label in
+                                Text(label.rawValue).tag(label)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 90)
+
+                        TextField("Phone", text: $contact.phoneNumbers[index].number)
                             .textContentType(.telephoneNumber)
                             .keyboardType(.phonePad)
+
                         if contact.phoneNumbers.count > 1 {
                             Button(role: .destructive) {
                                 contact.phoneNumbers.remove(at: index)
@@ -44,7 +53,7 @@ struct ContactReviewView: View {
                     }
                 }
                 Button {
-                    contact.phoneNumbers.append("")
+                    contact.phoneNumbers.append(LabeledPhone())
                 } label: {
                     Label("Add Phone Number", systemImage: "plus.circle.fill")
                 }

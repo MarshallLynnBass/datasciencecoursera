@@ -36,10 +36,15 @@ struct ContactSaver {
             cnContact.jobTitle = contact.jobTitle
             cnContact.organizationName = contact.company
 
-            // Phone numbers
+            // Phone numbers with labels
             cnContact.phoneNumbers = contact.phoneNumbers
-                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-                .map { CNLabeledValue(label: CNLabelWork, value: CNPhoneNumber(stringValue: $0)) }
+                .filter { !$0.number.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map { labeled in
+                    CNLabeledValue(
+                        label: cnLabel(for: labeled.label),
+                        value: CNPhoneNumber(stringValue: labeled.number)
+                    )
+                }
 
             // Email addresses
             cnContact.emailAddresses = contact.emailAddresses
@@ -82,6 +87,19 @@ struct ContactSaver {
             } catch {
                 completion(.failure(.saveFailed(error)))
             }
+        }
+    }
+
+    /// Maps our `PhoneLabel` to the appropriate `CNLabel` constant.
+    private static func cnLabel(for label: LabeledPhone.PhoneLabel) -> String {
+        switch label {
+        case .mobile: return CNLabelPhoneNumberMobile
+        case .work: return CNLabelWork
+        case .home: return CNLabelHome
+        case .main: return CNLabelPhoneNumberMain
+        case .direct: return CNLabelWork // no direct CN equivalent; use Work
+        case .fax: return CNLabelPhoneNumberWorkFax
+        case .other: return CNLabelOther
         }
     }
 }

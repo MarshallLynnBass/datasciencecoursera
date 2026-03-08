@@ -67,9 +67,9 @@ struct HomeView: View {
         isProcessing = true
         let newContact = ScannedContact()
 
-        TextRecognizer.recognizeText(in: image) { recognizedLines in
+        TextRecognizer.recognizeText(in: image) { elements in
             DispatchQueue.main.async {
-                ContactParser.parse(lines: recognizedLines, into: newContact)
+                ContactParser.parse(elements: elements, into: newContact)
                 self.contact = newContact
                 self.isProcessing = false
                 self.navigateToReview = true
