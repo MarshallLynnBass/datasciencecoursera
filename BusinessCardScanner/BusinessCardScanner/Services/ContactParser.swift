@@ -1,27 +1,21 @@
 import Foundation
 
-/// Parses an array of spatially-aware OCR text elements into a `ScannedContact`,
-/// using NSDataDetector for structured data and spatial/size heuristics for names and titles.
+/// Parses an array of OCR-recognized text lines into a `ScannedContact`,
+/// using NSDataDetector for structured data and heuristics for names and titles.
 struct ContactParser {
 
     // MARK: - Public
 
-    static func parse(elements: [RecognizedTextElement], into contact: ScannedContact) {
-        // Sort elements top-to-bottom by their vertical center (top of card first)
-        let sorted = elements.sorted { $0.verticalCenter < $1.verticalCenter }
-
+    static func parse(lines: [String], into contact: ScannedContact) {
         var phones: [LabeledPhone] = []
         var emails: [String] = []
         var website: String = ""
-        var addressLines: [String] = []
 
-        // Track which elements are "consumed" by NSDataDetector so we know what's left
+        // Track which lines are "consumed" by NSDataDetector so we know what's left
         var consumed = Set<Int>()
 
-        // Combine all text for NSDataDetector (it works best on a full block of text).
-        // But we also need per-element detection to know which element each match came from.
-        for (index, element) in sorted.enumerated() {
-            let text = element.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for (index, rawLine) in lines.enumerated() {
+            let text = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
                 consumed.insert(index)
                 continue
@@ -34,7 +28,7 @@ struct ContactParser {
                 case .phone(let number):
                     let label = inferPhoneLabel(
                         from: text,
-                        nearby: nearbyText(for: index, in: sorted)
+                        nearby: nearbyText(for: index, in: lines)
                     )
                     phones.append(LabeledPhone(number: number, label: label))
                     consumed.insert(index)
@@ -74,12 +68,13 @@ struct ContactParser {
         contact.emailAddresses = emails.isEmpty ? [""] : emails
         contact.website = website
 
-        // Gather unconsumed elements — these are candidates for name, title, company
-        let remaining = sorted.enumerated()
+        // Gather unconsumed lines — these are candidates for name, title, company
+        let remaining = lines.enumerated()
             .filter { !consumed.contains($0.offset) }
-            .map { $0.element }
+            .map { $0.element.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
 
-        assignNameTitleCompany(from: remaining, allElements: sorted, into: contact)
+        assignNameTitleCompany(from: remaining, into: contact)
     }
 
     // MARK: - NSDataDetector
@@ -160,8 +155,6 @@ struct ContactParser {
 
     // MARK: - Phone Label Detection
 
-    /// Maps of keywords to phone label types, checked against the line containing
-    /// the phone number and the lines immediately above/below it.
     private static let phoneLabelMap: [(keywords: [String], label: LabeledPhone.PhoneLabel)] = [
         (["mobile", "cell", "m:", "mob"], .mobile),
         (["fax", "f:", "facsimile"], .fax),
@@ -185,19 +178,19 @@ struct ContactParser {
         return .work // default
     }
 
-    /// Returns the text of the elements immediately before and after `index`.
-    private static func nearbyText(for index: Int, in elements: [RecognizedTextElement]) -> [String] {
+    /// Returns the text of the lines immediately before and after `index`.
+    private static func nearbyText(for index: Int, in lines: [String]) -> [String] {
         var texts: [String] = []
         if index > 0 {
-            texts.append(elements[index - 1].text)
+            texts.append(lines[index - 1])
         }
-        if index < elements.count - 1 {
-            texts.append(elements[index + 1].text)
+        if index < lines.count - 1 {
+            texts.append(lines[index + 1])
         }
         return texts
     }
 
-    // MARK: - Name / Title / Company (spatial + size heuristics)
+    // MARK: - Name / Title / Company
 
     private static let titleKeywords = [
         "manager", "director", "engineer", "president", "vp", "vice president",
@@ -210,71 +203,38 @@ struct ContactParser {
         "marketing", "sales", "operations", "accounting",
     ]
 
-    private static func assignNameTitleCompany(
-        from remaining: [RecognizedTextElement],
-        allElements: [RecognizedTextElement],
-        into contact: ScannedContact
-    ) {
-        guard !remaining.isEmpty else { return }
+    private static func assignNameTitleCompany(from lines: [String], into contact: ScannedContact) {
+        guard !lines.isEmpty else { return }
 
-        // --- Step 1: Find the largest text element — most likely the person's name ---
-        let maxHeight = remaining.map(\.relativeHeight).max() ?? 0
-        // Consider elements "largest" if they are within 85% of the max height
-        let largestThreshold = maxHeight * 0.85
+        // First remaining line is most likely the name
+        let nameParts = lines[0].components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        if nameParts.count >= 2 {
+            contact.firstName = nameParts[0]
+            contact.lastName = nameParts.dropFirst().joined(separator: " ")
+        } else {
+            contact.firstName = lines[0]
+        }
 
-        let largestElements = remaining.filter { $0.relativeHeight >= largestThreshold }
-
-        // Among the largest elements, prefer the one nearest the top
-        let nameElement = largestElements.min(by: { $0.verticalCenter < $1.verticalCenter })
-
-        // --- Step 2: Classify remaining elements ---
-        var nameCandidate: String?
+        // Classify remaining lines as title or company
         var titleCandidate: String?
-        var companyCandidates: [String] = []
+        var companyCandidate: String?
 
-        for element in remaining {
-            let text = element.text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if let nameEl = nameElement, element.text == nameEl.text,
-               element.boundingBox == nameEl.boundingBox {
-                nameCandidate = text
-                continue
-            }
-
-            if isLikelyJobTitle(text) && titleCandidate == nil {
-                titleCandidate = text
-            } else {
-                companyCandidates.append(text)
+        for line in lines.dropFirst() {
+            if isLikelyJobTitle(line) && titleCandidate == nil {
+                titleCandidate = line
+            } else if companyCandidate == nil {
+                companyCandidate = line
             }
         }
 
-        // If we didn't get a name from size heuristic, fall back to top-most remaining
-        if nameCandidate == nil {
-            nameCandidate = remaining.first?.text
-            // Remove it from company candidates if it ended up there
-            if let name = nameCandidate {
-                companyCandidates.removeAll { $0 == name }
-            }
-        }
-
-        // Assign name
-        if let name = nameCandidate {
-            let parts = name.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-            if parts.count >= 2 {
-                contact.firstName = parts[0]
-                contact.lastName = parts.dropFirst().joined(separator: " ")
-            } else {
-                contact.firstName = name
-            }
-        }
-
-        // Assign title
         contact.jobTitle = titleCandidate ?? ""
 
-        // Assign company — use the first company candidate that isn't the title
-        // Prefer a candidate that is near the top of the card (often right below the name)
-        if let company = companyCandidates.first {
-            contact.company = company
+        // If only two remaining lines and neither matched title keywords,
+        // the second line is more likely the company than the title
+        if lines.count == 2 && titleCandidate == nil {
+            contact.company = lines[1]
+        } else {
+            contact.company = companyCandidate ?? ""
         }
     }
 
